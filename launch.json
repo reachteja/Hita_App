@@ -1,0 +1,35 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "🐛 Debug Django",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}\\backend\\manage.py",
+      "args": ["runserver", "--noreload"],
+      "django": true,
+      "cwd": "${workspaceFolder}\\backend",
+      "env": {
+        "DJANGO_SETTINGS_MODULE": "hita_project.settings"
+      },
+      "python": "${workspaceFolder}\\backend\\venv\\Scripts\\python.exe",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "🐛 Debug Celery Worker",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "celery",
+      "args": [
+        "-A", "hita_project",
+        "worker",
+        "--loglevel=info",
+        "--pool=solo"
+      ],
+      "cwd": "${workspaceFolder}\\backend",
+      "python": "${workspaceFolder}\\backend\\venv\\Scripts\\python.exe",
+      "console": "integratedTerminal"
+    }
+  ]
+}

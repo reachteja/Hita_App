@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.env
+*.egg-info/
+
+# Django
+uploads/
+staticfiles/
+db.sqlite3
+media/
+
+# Node
+node_modules/
+.next/
+.env.local
+npm-debug.log*
+
+# VS Code
+.vscode/settings.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+celerybeat-schedule

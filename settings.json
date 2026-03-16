@@ -1,0 +1,78 @@
+{
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "python.defaultInterpreterPath": "${workspaceFolder}/backend/venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+
+  // Copilot settings
+  "github.copilot.enable": {
+    "*": true,
+    "plaintext": true,
+    "markdown": true,
+    "python": true,
+    "typescript": true,
+    "typescriptreact": true
+  },
+
+  // Tell Copilot which files are important context
+  "github.copilot.chat.codeGeneration.instructions": [
+    {
+      "file": ".github/copilot-instructions.md"
+    },
+    {
+      "file": "HITA_CONTEXT.md"
+    }
+  ],
+
+  // File associations
+  "files.associations": {
+    "*.env.example": "dotenv",
+    "*.env.local.example": "dotenv"
+  },
+
+  // Exclude irrelevant files from Copilot context
+  "github.copilot.chat.localeOverride": "en",
+
+  // Terminal settings
+  "terminal.integrated.defaultProfile.windows": "Command Prompt",
+  "terminal.integrated.profiles.windows": {
+    "Command Prompt": {
+      "path": "cmd.exe",
+      "args": ["/k", "cd /d F:\\Freelance\\Hita_App\\backend && venv\\Scripts\\activate"]
+    }
+  },
+
+  // Search exclusions
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/venv": true,
+    "**/__pycache__": true,
+    "**/.next": true,
+    "**/migrations": true,
+    "**/uploads": true
+  },
+
+  // File watcher exclusions
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/venv/**": true,
+    "**/__pycache__/**": true,
+    "**/.next/**": true
+  },
+
+  // Python settings
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.autopep8",
+    "editor.tabSize": 4
+  },
+
+  // TypeScript settings
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2
+  },
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2
+  }
+}
