@@ -67,9 +67,9 @@ WSGI_APPLICATION = 'hita_project.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('DB_NAME', 'hita'),
-        'USER': os.getenv('DB_USER', 'hita'),
-        'PASSWORD': os.getenv('DB_PASSWORD', 'hita123'),
+        'NAME': os.getenv('DB_NAME', 'postgres'),
+        'USER': os.getenv('DB_USER', 'postgres'),
+        'PASSWORD': os.getenv('DB_PASSWORD', 'dbase@222022'),
         'HOST': os.getenv('DB_HOST', 'localhost'),
         'PORT': os.getenv('DB_PORT', '5432'),
     }
