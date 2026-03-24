@@ -12,7 +12,7 @@ def _ensure_table():
     with connection.cursor() as cursor:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS hita_embeddings (
-                id SERIAL PRIMARY KEY,
+                id BIGSERIAL PRIMARY KEY,
                 document_id UUID NOT NULL,
                 chunk_index INTEGER NOT NULL,
                 chunk_text TEXT NOT NULL,
@@ -21,6 +21,14 @@ def _ensure_table():
             );
             
             CREATE INDEX IF NOT EXISTS idx_embeddings_document ON hita_embeddings(document_id);
+        """)
+
+        # Create vector similarity search index
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS hita_embeddings_vector_idx
+            ON hita_embeddings
+            USING ivfflat (embedding vector_cosine_ops)
+            WITH (lists = 50);
         """)
 
 
@@ -73,10 +81,10 @@ def search_similar_chunks(question: str, user_id: str, limit: int = 5) -> list:
                     e.chunk_text,
                     d.original_name,
                     e.document_id,
-                    e.embedding <=> %s as distance
+                    e.embedding <=> %s::vector AS distance
                 FROM hita_embeddings e
-                JOIN documents_document d ON e.document_id = d.id
-                WHERE d.user_id = %s AND d.is_deleted = false AND d.status IN ('processed', 'ready')
+                JOIN documents_document d ON d.id = e.document_id::uuid
+                WHERE d.user_id = %s::uuid AND d.is_deleted = false AND d.status IN ('processed', 'ready')
                 ORDER BY distance
                 LIMIT %s
             """, [embedding_str, str(user_id), limit])

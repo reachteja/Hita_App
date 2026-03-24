@@ -22,7 +22,7 @@ def categorise_document(text: str) -> dict:
             raise ValueError('GEMINI_API_KEY not set')
         
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash-lite')
         
         prompt = f"""Analyze this document and extract the following information in JSON format:
         
@@ -80,12 +80,13 @@ def generate_embeddings(text: str) -> list:
         genai.configure(api_key=api_key)
         
         result = genai.embed_content(
-            model='models/text-embedding-004',
+            model='models/gemini-embedding-001',
             content=text,
-            task_type='RETRIEVAL_DOCUMENT'
+            task_type='retrieval_document',
+            
         )
         
-        return result['embedding']
+        return result['embedding'][:768]
     
     except Exception as e:
         logger.error(f"Embedding generation error: {str(e)}")
@@ -106,7 +107,7 @@ def answer_query(question: str, chunks: list) -> str:
             raise ValueError('GEMINI_API_KEY not set')
         
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-2.5-flash-lite')
         
         context = '\n\n---\n\n'.join(chunks[:5])  # Use top 5 chunks
         

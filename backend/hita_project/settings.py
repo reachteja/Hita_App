@@ -131,11 +131,16 @@ CORS_ALLOW_CREDENTIALS = True
 # Celery Configuration
 CELERY_BROKER_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = 'django-db'
+CELERY_CACHE_BACKEND = 'django-cache'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'Asia/Kolkata'
 
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_USE_SSL = {
+    'ssl_cert_reqs': None
+}
 # File upload configuration
 MAX_UPLOAD_SIZE_MB = int(os.getenv('MAX_UPLOAD_SIZE_MB', '25'))
 MAX_UPLOAD_SIZE = MAX_UPLOAD_SIZE_MB * 1024 * 1024
