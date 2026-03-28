@@ -31,7 +31,7 @@ Document text (first 3000 chars):
 
 Return a JSON object with these fields (use null if not found):
 {{
-    "category": "grocery|medical|maintenance|personal|events|finance|other",
+    "category": "grocery|medical|maintenance|personal|events|finance|education|other",
     "extracted_date": "YYYY-MM-DD or null",
     "extracted_amount": number or null (in rupees),
     "extracted_vendor": "shop/hospital/vendor name or null",

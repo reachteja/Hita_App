@@ -149,7 +149,7 @@ ALLOWED_FILE_TYPES = ['application/pdf', 'application/vnd.openxmlformats-officed
                       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                       'image/jpeg', 'image/png', 'text/plain']
 
-DOCUMENT_CATEGORIES = ['grocery', 'medical', 'maintenance', 'personal', 'events', 'finance', 'other']
+DOCUMENT_CATEGORIES = ['grocery', 'medical', 'maintenance', 'personal', 'events', 'finance','education', 'other']
 
 # Gemini API
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')

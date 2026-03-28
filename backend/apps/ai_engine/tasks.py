@@ -67,7 +67,7 @@ def process_document(self, document_id: str):
         document.category         = ai_result.get('category', 'other')
         document.summary          = ai_result.get('summary', '')
         document.extracted_vendor = ai_result.get('extracted_vendor') or ''
-        document.status           = 'processed'
+        document.status           = 'ready'
         document.error_message    = ''
 
         # Handle date
