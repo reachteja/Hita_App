@@ -1,14 +1,13 @@
-/*module.exports = {
+module.exports = {
   plugins: {
-    tailwindcss: {},
-    autoprefixer: {},
+    '@tailwindcss/postcss': {},
+    
   },
-};*/
+};
 
-export default {
+/*export default {
   plugins: {
     '@tailwindcss/postcss': {}, // The new package name
     // autoprefixer: {},      <-- You can likely remove this now!
   },
-}
-
+}*/
