@@ -105,8 +105,14 @@ class APIClient {
 
   // Document endpoints
   documents = {
-    list: (category?: string) =>
-      this.client.get('/documents/', { params: category ? { category } : {} }),
+    list: (category?: string, tags?: string[]) => {
+      const params = new URLSearchParams();
+      if (category) params.append('category', category);
+      if (tags && tags.length > 0) {
+        tags.forEach(tag => params.append('tag', tag));
+      }
+      return this.client.get('/documents/', { params });
+    },
     upload: (formData: FormData) =>
       this.client.post('/documents/upload/', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
@@ -115,6 +121,16 @@ class APIClient {
     delete: (id: string) => this.client.delete(`/documents/${id}/`),
     updateCategory: (id: string, category: string) =>
       this.client.patch(`/documents/${id}/category/`, { category }),
+
+    // Tag operations
+    addTag: (docId: string, name: string) =>
+      this.client.post(`/documents/${docId}/tags/`, { name }),
+    removeTag: (docId: string, tagId: string) =>
+      this.client.delete(`/documents/${docId}/tags/`, { data: { tag_id: tagId } }),
+    listTags: () =>
+      this.client.get('/documents/tags/'),
+    deleteTag: (tagId: string) =>
+      this.client.delete(`/documents/tags/${tagId}/`),
   };
 
   // AI endpoints

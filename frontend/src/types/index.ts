@@ -8,6 +8,11 @@ export interface HitaUser {
   created_at: string;
 }
 
+export interface Tag {
+  id:   string;
+  name: string;
+}
+
 export interface Document {
   id: string;
   original_name: string;
@@ -21,6 +26,7 @@ export interface Document {
   status: 'uploaded' | 'processing' | 'ready' | 'failed';
   error_message: string;
   created_at: string;
+  tags: Tag[]; 
 }
 
 export interface QueryResponse {

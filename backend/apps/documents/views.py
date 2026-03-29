@@ -8,8 +8,9 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.conf import settings
+from rest_framework.views import APIView
 
-from .models import Document
+from .models import Document, Tag
 from .serializers import DocumentSerializer, DocumentUploadSerializer, DocumentCategoryUpdateSerializer
 
 
@@ -25,15 +26,82 @@ class DocumentViewSet(viewsets.ModelViewSet):
     
     def list(self, request, *args, **kwargs):
         """List user's documents with optional category filter."""
-        queryset = self.get_queryset()
+        queryset = self.get_queryset().prefetch_related('tags')
         
         # Filter by category if provided
         category = request.query_params.get('category')
         if category:
             queryset = queryset.filter(category=category)
+
+        # Filter by tags (multiple tags = AND filter)
+        tag_names = request.query_params.getlist('tag')
+        if tag_names:
+            for tag_name in tag_names:
+                queryset = queryset.filter(tags__name=tag_name)
         
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=['get', 'post'], url_path='tags')
+    def list_tags(self, request):
+        """GET all user tags / POST create new tag."""
+        if request.method == 'GET':
+            tags = Tag.objects.filter(user=request.user)
+            return Response({
+                'tags': [{'id': str(t.id), 'name': t.name} for t in tags]
+            })
+
+        # POST — create tag
+        name = request.data.get('name', '').strip().lower()
+        if not name:
+            return Response({'error': 'Tag name required'}, status=400)
+        if len(name) > 50:
+            return Response({'error': 'Tag name too long — max 50 characters'}, status=400)
+
+        tag, created = Tag.objects.get_or_create(user=request.user, name=name)
+        return Response({
+            'id':      str(tag.id),
+            'name':    tag.name,
+            'created': created,
+        }, status=201 if created else 200)
+
+
+    @action(detail=False, methods=['delete'], url_path='tags/(?P<tag_id>[^/.]+)')
+    def delete_tag(self, request, tag_id=None):
+        """Delete a tag — removes from all documents too."""
+        try:
+            tag = Tag.objects.get(id=tag_id, user=request.user)
+            tag.delete()
+            return Response({'message': 'Tag deleted'})
+        except Tag.DoesNotExist:
+            return Response({'error': 'Tag not found'}, status=404)
+
+
+    @action(detail=True, methods=['post', 'delete'], url_path='tags')
+    def document_tags(self, request, pk=None):
+        """POST add tag to document / DELETE remove tag from document."""
+        document = self.get_object()
+
+        if request.method == 'POST':
+            name = request.data.get('name', '').strip().lower()
+            if not name:
+                return Response({'error': 'Tag name required'}, status=400)
+
+            tag, _ = Tag.objects.get_or_create(user=request.user, name=name)
+            document.tags.add(tag)
+
+        elif request.method == 'DELETE':
+            tag_id = request.data.get('tag_id')
+            if not tag_id:
+                return Response({'error': 'tag_id required'}, status=400)
+            try:
+                tag = Tag.objects.get(id=tag_id, user=request.user)
+                document.tags.remove(tag)
+            except Tag.DoesNotExist:
+                pass
+
+        all_tags = [{'id': str(t.id), 'name': t.name} for t in document.tags.all()]
+        return Response({'tags': all_tags})
     
     @action(detail=False, methods=['post'])
     def upload(self, request):
