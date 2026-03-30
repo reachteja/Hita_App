@@ -42,11 +42,80 @@ class DocumentViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
     
+    def destroy(self, request, *args, **kwargs):
+        """Hard delete document — removes file, embeddings, tags, and DB record."""
+        document = self.get_object()
+
+        # Delete physical file
+        if os.path.exists(document.file_path):
+            os.remove(document.file_path)
+
+        # Delete embeddings from pgvector
+        try:
+            from apps.ai_engine.embeddings import delete_document_embeddings
+            delete_document_embeddings(str(document.id))
+        except Exception:
+            pass
+
+        # Hard delete document record
+        document.delete()
+
+        # Clean up orphaned tags — tags with no remaining documents
+        Tag.objects.filter(
+            user=request.user,
+            documents__isnull=True
+        ).delete()
+
+        return Response(
+            {'message': 'Document permanently deleted'},
+            status=status.HTTP_200_OK
+        )
+    
+    @action(detail=True, methods=['post'], url_path='retry')
+    def retry(self, request, pk=None):
+        """Retry processing a failed document."""
+        document = self.get_object()
+
+        if document.status not in ['failed', 'processing']:
+            return Response(
+                {'error': 'Only failed documents can be retried'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Reset status
+        document.status        = 'processing'
+        document.error_message = ''
+        document.save(update_fields=['status', 'error_message'])
+
+        # Re-queue Celery task
+        try:
+            from apps.ai_engine.tasks import process_document
+            task = process_document.delay(str(document.id))
+            document.celery_task_id = task.id
+            document.save(update_fields=['celery_task_id'])
+        except Exception as e:
+            document.status        = 'failed'
+            document.error_message = f'Retry failed: {str(e)}'
+            document.save(update_fields=['status', 'error_message'])
+            return Response(
+                {'error': 'Could not queue retry. Is Celery running?'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        serializer = self.get_serializer(document)
+        return Response({
+            'message':  'Document queued for reprocessing',
+            'document': serializer.data,
+        })
+    
     @action(detail=False, methods=['get', 'post'], url_path='tags')
     def list_tags(self, request):
         """GET all user tags / POST create new tag."""
         if request.method == 'GET':
-            tags = Tag.objects.filter(user=request.user)
+            tags = Tag.objects.filter(
+                    user=request.user,
+                    documents__is_deleted=False,        # tag has at least one non-deleted doc
+                    ).distinct().order_by('name')
             return Response({
                 'tags': [{'id': str(t.id), 'name': t.name} for t in tags]
             })
