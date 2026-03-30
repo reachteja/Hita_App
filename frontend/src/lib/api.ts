@@ -131,6 +131,14 @@ class APIClient {
       this.client.get('/documents/tags/'),
     deleteTag: (tagId: string) =>
       this.client.delete(`/documents/tags/${tagId}/`),
+
+    // Retry failed document
+    retry: (docId: string) =>
+      this.client.post(`/documents/${docId}/retry/`),
+
+    // Transparency log
+    getLogs: (docId: string) =>
+      this.client.get(`/documents/${docId}/logs/`),
   };
 
   // AI endpoints

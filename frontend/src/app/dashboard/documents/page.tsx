@@ -136,7 +136,7 @@ export default function DocumentsPage() {
   const handleRemoveTag = async (docId: string, tagId: string) => {
     try {
       await apiClient.documents.removeTag(docId, tagId);
-      await fetchDocuments();
+      await Promise.all([fetchDocuments(), fetchTags()]);
     } catch {}
   };
 
@@ -180,8 +180,32 @@ export default function DocumentsPage() {
     try {
       await apiClient.documents.delete(id);
       setDocuments(prev => prev.filter(d => d.id !== id));
+      // Refresh tags — some may now have no documents
+      const res = await apiClient.documents.listTags();
+      setAllTags(res.data.tags);
+
+      // Clear any selected tags that no longer exist
+      const remainingTagNames = res.data.tags.map((t: any) => t.name);
+      setSelectedTags(prev =>
+          prev.filter(t => remainingTagNames.includes(t))
+      );
     } catch { alert('Delete failed'); }
   };
+
+  const handleRetry = async (docId: string) => {
+    try {
+        await apiClient.documents.retry(docId);
+        // Immediately update status to processing in UI
+        setDocuments(prev =>
+            prev.map(d => d.id === docId
+                ? { ...d, status: 'processing' as any, error_message: '' }
+                : d
+            )
+        );
+    } catch {
+        alert('Retry failed. Make sure Celery worker is running.');
+    }
+};
 
   const processingCount = documents.filter(
     d => d.status === 'processing' || d.status === 'uploaded'
@@ -331,6 +355,14 @@ export default function DocumentsPage() {
                           {doc.summary}
                         </div>
                       )}
+
+                      {doc.status === 'failed' && doc.error_message && (
+                          <div className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                              ⚠️ {doc.error_message.length > 80
+                                  ? doc.error_message.substring(0, 80) + '...'
+                                  : doc.error_message}
+                          </div>
+                      )}
                     </div>
                   </div>
 
@@ -339,6 +371,15 @@ export default function DocumentsPage() {
                       {isProcessing && <span className="animate-spin inline-block text-xs">⚙️</span>}
                       {statusCfg.label}
                     </span>
+                    {doc.status === 'failed' && (
+                        <button
+                            onClick={() => handleRetry(doc.id)}
+                            title="Retry processing"
+                            className="text-xs px-3 py-1 bg-indigo-50 text-indigo-600 border border-indigo-200 rounded-full hover:bg-indigo-100 transition flex items-center gap-1">
+                            🔄 Retry
+                        </button>
+                    )}
+
                     <button onClick={() => handleDelete(doc.id)}
                       className="text-gray-300 hover:text-red-400 transition" title="Delete">
                       🗑️
