@@ -2,6 +2,8 @@
 import { useAuth } from '@/hooks/useAuth';
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
+import { apiClient } from '@/lib/api';
+import Link from 'next/link';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, loading } = useAuth();
@@ -39,11 +41,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <h1 className="text-xl font-bold text-gray-900">Hita</h1>
             </div>
             <div className="flex items-center space-x-4">
-              <a href="/dashboard" className="text-gray-600 hover:text-gray-900">Dashboard</a>
-              <a href="/dashboard/documents" className="text-gray-600 hover:text-gray-900">Documents</a>
-              <a href="/dashboard/ask" className="text-gray-600 hover:text-gray-900">Ask Hita</a>
+              <Link href="/dashboard" className="text-gray-600 hover:text-gray-900">Dashboard</Link>
+              <Link href="/dashboard/documents" className="text-gray-600 hover:text-gray-900">Documents</Link>
+              <Link href="/dashboard/ask" className="text-gray-600 hover:text-gray-900">Ask Hita</Link>
+              <Link href="/dashboard/settings" className="text-gray-600 hover:text-gray-900">⚙️ Settings</Link>
               <button
-                onClick={() => {
+                onClick={async () => {
+                  try {
+                    const refresh = localStorage.getItem('refresh_token');
+                    if (refresh) {
+                      await apiClient.auth.logout(refresh);
+                    }
+                  } catch {}
                   localStorage.clear();
                   router.push('/auth/login');
                 }}
@@ -51,6 +60,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               >
                 Logout
               </button>
+             
             </div>
           </div>
         </div>

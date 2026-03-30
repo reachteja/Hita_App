@@ -101,6 +101,13 @@ class APIClient {
     profile: () => this.client.get('/auth/profile/'),
     updateProfile: (data: Partial<{ full_name: string }>) =>
       this.client.patch('/auth/profile/', data),
+    deleteAccount: (confirmEmail: string, refreshToken: string) =>
+        this.client.delete('/auth/delete/', {
+            data: {
+                confirm_email:  confirmEmail,
+                refresh_token:  refreshToken,
+            }
+        }),
   };
 
   // Document endpoints

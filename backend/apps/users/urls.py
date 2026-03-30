@@ -9,6 +9,7 @@ auth_login = AuthViewSet.as_view({'post': 'login'})
 auth_logout = AuthViewSet.as_view({'post': 'logout'})
 auth_profile = AuthViewSet.as_view({'get': 'profile'})
 auth_profile_update = AuthViewSet.as_view({'patch': 'profile_update'})
+auth_delete = AuthViewSet.as_view({'delete': 'delete_account'})
 
 urlpatterns = [
     path('register/', auth_register, name='register'),
@@ -16,4 +17,5 @@ urlpatterns = [
     path('logout/', auth_logout, name='logout'),
     path('profile/', auth_profile, name='profile'),
     path('profile/', auth_profile_update, name='profile_update'),
+    path('delete/', auth_delete, name='delete_account'),
 ]

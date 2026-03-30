@@ -99,3 +99,65 @@ class AuthViewSet(viewsets.ViewSet):
             serializer.save()
             return Response(serializer.data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=False, methods=['delete'], url_path='delete')
+    def delete_account(self, request):
+        """
+        Permanently delete user account and all associated data.
+        DPDP Act 2023 — right to erasure.
+        """
+        user = request.user
+
+        # Require email confirmation
+        confirm_email = request.data.get('confirm_email', '').strip().lower()
+        if confirm_email != user.email.lower():
+            return Response(
+                {'error': 'Email does not match. Please type your email exactly to confirm.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Step 1 — Delete physical files
+            import os
+            import shutil
+            from django.conf import settings as django_settings
+
+            user_upload_dir = os.path.join(
+                django_settings.MEDIA_ROOT,
+                str(user.id)
+            )
+            if os.path.exists(user_upload_dir):
+                shutil.rmtree(user_upload_dir)
+
+            # Step 2 — Delete all pgvector embeddings
+            from apps.documents.models import Document
+            from apps.ai_engine.embeddings import delete_document_embeddings
+
+            for doc in Document.objects.filter(user=user):
+                try:
+                    delete_document_embeddings(str(doc.id))
+                except Exception:
+                    pass
+
+            # Step 3 — Blacklist refresh token
+            refresh_token = request.data.get('refresh_token')
+            if refresh_token:
+                try:
+                    from rest_framework_simplejwt.tokens import RefreshToken
+                    token = RefreshToken(refresh_token)
+                    token.blacklist()
+                except Exception:
+                    pass
+
+            # Step 4 — Delete user (cascades to documents, tags, logs)
+            user.delete()
+
+            return Response({
+                'message': 'Your account and all data has been permanently deleted.'
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response(
+                {'error': f'Deletion failed: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
