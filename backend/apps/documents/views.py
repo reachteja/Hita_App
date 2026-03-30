@@ -280,3 +280,86 @@ class DocumentViewSet(viewsets.ModelViewSet):
                 {'error': f'Upload failed: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+        
+    @action(detail=False, methods=['get'], url_path='export')
+    def export_zip(self, request):
+        """Export user documents as a ZIP file."""
+        import zipfile
+        import io
+        import os
+        from django.http import StreamingHttpResponse
+
+        queryset = self.get_queryset()
+
+        # Optional category filter
+        category = request.query_params.get('category')
+        if category:
+            queryset = queryset.filter(category=category)
+
+        # Only export ready documents
+        queryset = queryset.filter(
+            status__in=['ready', 'processed']
+        )
+
+        if not queryset.exists():
+            return Response(
+                {'error': 'No documents available to export'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Build ZIP in memory
+        zip_buffer = io.BytesIO()
+
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+
+            # Add metadata CSV
+            import csv
+            meta_buffer = io.StringIO()
+            writer = csv.writer(meta_buffer)
+            writer.writerow([
+                'filename', 'category', 'date',
+                'amount', 'vendor', 'summary', 'uploaded_on'
+            ])
+
+            for doc in queryset:
+                # Add document file
+                if os.path.exists(doc.file_path):
+                    # Use category/filename structure in ZIP
+                    zip_filename = f"{doc.category}/{doc.original_name}"
+
+                    # Handle duplicate filenames
+                    names_in_zip = zip_file.namelist()
+                    if zip_filename in names_in_zip:
+                        name, ext  = os.path.splitext(doc.original_name)
+                        zip_filename = f"{doc.category}/{name}_{str(doc.id)[:8]}{ext}"
+
+                    zip_file.write(doc.file_path, zip_filename)
+
+                # Add to metadata CSV
+                writer.writerow([
+                    doc.original_name,
+                    doc.category,
+                    doc.extracted_date or '',
+                    doc.extracted_amount or '',
+                    doc.extracted_vendor or '',
+                    doc.summary or '',
+                    doc.created_at.strftime('%Y-%m-%d'),
+                ])
+
+            # Add metadata CSV to ZIP
+            zip_file.writestr('_metadata.csv', meta_buffer.getvalue())
+
+        zip_buffer.seek(0)
+
+        # Build filename
+        from django.utils import timezone
+        timestamp    = timezone.now().strftime('%Y%m%d_%H%M%S')
+        category_str = f'_{category}' if category else ''
+        filename     = f'hita_documents{category_str}_{timestamp}.zip'
+
+        response = StreamingHttpResponse(
+            zip_buffer,
+            content_type='application/zip'
+        )
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response

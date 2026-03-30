@@ -192,6 +192,25 @@ export default function DocumentsPage() {
     } catch { alert('Delete failed'); }
   };
 
+  const handleExport = async () => {
+    try {
+        const cat = activeCategory === 'all' ? undefined : activeCategory;
+        const res = await apiClient.documents.exportZip(cat);
+
+        // Create download link from blob
+        const url      = window.URL.createObjectURL(new Blob([res.data]));
+        const link     = document.createElement('a');
+        link.href      = url;
+        link.download  = `hita_documents_${new Date().toISOString().slice(0, 10)}.zip`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+        alert('Export failed. Please try again.');
+    }
+};
+
   const handleRetry = async (docId: string) => {
     try {
         await apiClient.documents.retry(docId);
@@ -217,6 +236,22 @@ export default function DocumentsPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Documents</h1>
+        
+        <div className="flex items-center gap-3">
+        {/* Export button */}
+        {documents.length > 0 && (
+            <button
+                onClick={handleExport}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 transition">
+                📦 Export ZIP
+                {activeCategory !== 'all' && (
+                    <span className="text-xs text-gray-400">
+                        ({activeCategory})
+                    </span>
+                )}
+            </button>
+        )}
+
         {processingCount > 0 && (
           <div className="flex items-center gap-2 bg-yellow-50 border border-yellow-200 text-yellow-700 px-4 py-2 rounded-xl text-sm">
             <span className="animate-spin inline-block">⚙️</span>
@@ -224,7 +259,8 @@ export default function DocumentsPage() {
           </div>
         )}
       </div>
-
+    </div>
+    
       {/* Category filter tabs */}
       <div className="flex gap-2 flex-wrap mb-5">
         {CATEGORIES.map(cat => (

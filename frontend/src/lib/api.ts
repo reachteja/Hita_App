@@ -146,6 +146,15 @@ class APIClient {
     // Transparency log
     getLogs: (docId: string) =>
       this.client.get(`/documents/${docId}/logs/`),
+
+    exportZip: (category?: string) => {
+      const params = new URLSearchParams();
+      if (category) params.append('category', category);
+      return this.client.get('/documents/export/', {
+          params,
+          responseType: 'blob',    // important — tells axios to handle binary
+      });
+      },
   };
 
   // AI endpoints
