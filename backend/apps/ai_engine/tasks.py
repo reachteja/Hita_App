@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def process_document(self, document_id: str):
+    # Reset DB connection at start of each task
+    from django.db import connection
+    connection.close()
     """
     Main async task: extract text → scrub PII → embed → categorise → save.
     Runs in background after every document upload.

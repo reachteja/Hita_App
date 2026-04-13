@@ -34,16 +34,21 @@ export default function AskPage() {
     const text = (q || question).trim();
     if (!text || loading) return;
 
-    setMessages(prev => [...prev, { role: 'user', content: text }]);
+    const userMessage: Message = { role: 'user', content: text };
+    const updatedMessages = [...messages, userMessage];
+
+    setMessages(updatedMessages);
     setQuestion('');
     setLoading(true);
 
     try {
-      const res = await apiClient.ai.query(text);
+      const res = await apiClient.ai.query(text, updatedMessages);
       setMessages(prev => [...prev, {
         role:    'hita',
         content: res.data.answer,
-        sources: res.data.sources,
+        intent:    res.data.intent,
+        documents: res.data.documents || [],
+        sources:   res.data.sources   || [],
       }]);
     } catch {
       setMessages(prev => [...prev, {

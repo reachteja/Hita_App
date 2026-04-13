@@ -159,8 +159,9 @@ class APIClient {
 
   // AI endpoints
   ai = {
-    query: (question: string) =>
-      this.client.post('/ai/query/', { question }),
+    query: (question: string, history?: any[]) =>
+      this.client.post('/ai/query/', { question,
+            history: history || [], }),
     status: (documentId: string) =>
       this.client.get('/ai/status/', { params: { document_id: documentId } }),
   };

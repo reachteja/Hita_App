@@ -72,6 +72,16 @@ DATABASES = {
         'PASSWORD': os.getenv('DB_PASSWORD', 'dbase@222022'),
         'HOST': os.getenv('DB_HOST', 'localhost'),
         'PORT': os.getenv('DB_PORT', '5432'),
+        'CONN_MAX_AGE': 0,  
+        'OPTIONS': {
+            'connect_timeout': 10,
+            'keepalives':      1,
+            'keepalives_idle': 30,
+            'keepalives_interval': 10,
+            'keepalives_count': 5,
+            'sslmode': 'require',
+        },
+       
     }
 }
 
