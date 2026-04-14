@@ -1,6 +1,7 @@
 'use client';
 import { useState, useRef, useEffect } from 'react';
 import { apiClient } from '@/lib/api';
+import ReactMarkdown from 'react-markdown';
 
 interface Message {
   role:    'user' | 'hita';
@@ -82,7 +83,18 @@ export default function AskPage() {
                   <span className="font-semibold text-indigo-700 text-xs">Hita</span>
                 </div>
               )}
-              <p>{msg.content}</p>
+              {/* Answer text — renders markdown bullets and line breaks */}
+              <div className="prose prose-sm max-w-none
+                prose-p:my-1 prose-ul:my-1 prose-li:my-0.5
+                prose-ul:pl-4 ${msg.role === 'user' ? 'prose-invert' : ''}`}">
+                <ReactMarkdown>
+                  {msg.content
+                    .replace(/^•\s*/gm, '- ')
+                    .replace(/:\s*•/g, ':\n- ')
+                    .replace(/\s•\s/g, '\n- ')
+                  }</ReactMarkdown>
+              </div>
+              
               {msg.sources && msg.sources.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-gray-100">
                   <p className="text-xs text-gray-400 mb-1">Sources:</p>
