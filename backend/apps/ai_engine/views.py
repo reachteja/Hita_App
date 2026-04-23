@@ -168,6 +168,10 @@ class AIViewSet(viewsets.ViewSet):
         vendor_filter   = intent_result.get('filters', {}).get('vendor')
         search_term     = intent_result.get('filters', {}).get('search_term')
 
+        if category_filter == 'other':
+            category_filter = None
+            logger.info('[RAG] category=other ignored — treated as unclassified')
+
         logger.info(f'[RAG] Question: {question}')
         logger.info(f'[RAG] Filters — cat={category_filter} '
                     f'date={date_from}~{date_to} '
@@ -181,7 +185,7 @@ class AIViewSet(viewsets.ViewSet):
             if len(question.split()) < 5 and last_hita:
                 search_question = f"{last_hita} {question}"
 
-        has_filters = any([category_filter, date_from, date_to, vendor_filter])
+        has_filters = any([category_filter, date_from, date_to, vendor_filter,search_term])
 
         # ── Base queryset ────────────────────────────────────────────
         base_qs = Document.objects.filter(
@@ -265,6 +269,12 @@ class AIViewSet(viewsets.ViewSet):
                 filtered_embed_qs = filtered_embed_qs.exclude(
                     extracted_date__isnull=True
                 )
+            if search_term:
+                filtered_embed_qs = filtered_embed_qs.filter(
+                    Q(extracted_text__icontains=search_term) |
+                    Q(original_name__icontains=search_term) |
+                    Q(summary__icontains=search_term)
+                )
 
             embed_doc_ids = set(
                 str(i) for i in filtered_embed_qs.values_list('id', flat=True)
@@ -331,13 +341,14 @@ class AIViewSet(viewsets.ViewSet):
         token_count   = 0
 
         for doc in ranked_docs:
+            relevant_text = self._get_relevant_text(doc, search_term)
             doc_text = (
                 f"Document: {doc.original_name}\n"
                 f"Date: {doc.extracted_date}\n"
                 f"Category: {doc.category}\n"
                 f"Vendor: {doc.extracted_vendor or 'Unknown'}\n"
                 f"Amount: ₹{doc.extracted_amount or 'Unknown'}\n"
-                f"Content: {doc.extracted_text[:800]}"
+                f"Content: {relevant_text}"
             )
             doc_tokens = len(doc_text) // 4
 
@@ -357,6 +368,7 @@ class AIViewSet(viewsets.ViewSet):
                 f'(db={str(doc.id) in db_doc_ids} '
                 f'embed={embed_scores.get(str(doc.id), 0):.2f} '
                 f'rank={rank_score(str(doc.id)):.2f})'
+                f'text_start={doc.extracted_text.lower().find(search_term.lower()) if search_term and doc.extracted_text else 0})'
             )
 
         logger.info(f'[RAG] Sending {len(context_parts)} docs '
@@ -384,7 +396,36 @@ class AIViewSet(viewsets.ViewSet):
             'documents': [],
         }, status=status.HTTP_200_OK)
     
-    
+    def _get_relevant_text(doc, search_term: str, max_chars: int = 1500) -> str:
+        """
+        Extract the most relevant portion of document text.
+        If search_term found — return surrounding context.
+        Otherwise return beginning of text.
+        """
+        text = doc.extracted_text or ''
+        if not text:
+            return ''
+
+        if not search_term:
+            return text[:max_chars]
+
+        # Find where search_term appears in the text
+        term_lower = search_term.lower()
+        text_lower = text.lower()
+        pos        = text_lower.find(term_lower)
+
+        if pos == -1:
+            # Term not found — return start of text
+            return text[:max_chars]
+
+        # Return text centered around the found term
+        # Go back 200 chars to include headers/context before the term
+        start = max(0, pos - 200)
+        end   = min(len(text), start + max_chars)
+
+        # If we're not at the start — include a note
+        prefix = '...\n' if start > 0 else ''
+        return prefix + text[start:end]
     
     '''
     def _is_metadata_query(self, question: str) -> bool:
