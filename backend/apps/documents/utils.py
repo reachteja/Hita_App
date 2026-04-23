@@ -65,19 +65,28 @@ def extract_text_from_docx(file_path: str) -> str:
 
 
 def extract_text_from_xlsx(file_path: str) -> str:
-    """Extract text from XLSX using openpyxl."""
-    try:
-        from openpyxl import load_workbook
-        wb = load_workbook(file_path)
-        text = ''
-        for sheet in wb.sheetnames:
-            ws = wb[sheet]
-            text += f"\n=== Sheet: {sheet} ===\n"
-            for row in ws.iter_rows(values_only=True):
-                text += ' | '.join(str(cell) if cell is not None else '' for cell in row) + '\n'
-        return text
-    except Exception as e:
-        raise ValueError(f"Error extracting XLSX: {str(e)}")
+    """Extract text from ALL sheets in xlsx."""
+    import openpyxl
+    wb         = openpyxl.load_workbook(file_path, data_only=True)
+    text_parts = []
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        text_parts.append(f'Sheet: {sheet_name}')
+
+        for row in ws.iter_rows(values_only=True):
+            if all(cell is None for cell in row):
+                continue
+            row_text = '\t'.join(
+                str(cell).strip() if cell is not None else ''
+                for cell in row
+            )
+            if row_text.strip():
+                text_parts.append(row_text)
+
+        text_parts.append('')
+
+    return '\n'.join(text_parts)
 
 
 def extract_text_from_image(file_path: str) -> str:

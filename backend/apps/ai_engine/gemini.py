@@ -100,7 +100,13 @@ def generate_embeddings(text: str) -> list:
 
 def detect_query_intent(question: str, history: list = []) -> dict:
     global _gemini_client
-    today = datetime.date.today().isoformat()
+    today      = datetime.date.today()
+    today_str  = today.isoformat()
+    year       = today.year
+    last_month = (today.replace(day=1) - datetime.timedelta(days=1))
+    last_month_from = last_month.replace(day=1).isoformat()
+    last_month_to   = last_month.isoformat()
+    this_month_from = today.replace(day=1).isoformat()
 
     # Build recent context from history
     recent = ''
@@ -125,6 +131,7 @@ Current question: "{question}"
 Return ONLY this JSON, no markdown:
 {{
   "intent": "list_documents or answer_question",
+  "is_financial": true or false,
   "filters": {{
     "category": "grocery|medical|maintenance|personal|events|finance|education|other or null",
     "date_from": "YYYY-MM-DD or null",
@@ -160,12 +167,26 @@ EXAMPLES:
 "what medicines am I taking" → answer_question (wants content details)
 "find my Apollo receipt" → list_documents (wants document card)
 
+
 CATEGORY EXTRACTION HINTS:
 - bigbasket, dmart, reliance fresh, more supermarket → grocery
 - apollo pharmacy, medplus, hospital, clinic → medical  
 - plumber, electrician, carpenter, painter → maintenance
 - tneb, bescom, electricity board, water bill → finance
 If vendor name implies a category — set that category even if not explicitly stated.
+
+DATE CALCULATION — today is {today_str}, current year is {year}:
+- "this year"     → date_from: {year}-01-01,          date_to: {year}-12-31
+- "last year"     → date_from: {year-1}-01-01,        date_to: {year-1}-12-31
+- "this month"    → date_from: {this_month_from},     date_to: {today_str}
+- "last month"    → date_from: {last_month_from},     date_to: {last_month_to}
+- "in January"    → date_from: {year}-01-01,          date_to: {year}-01-31
+- "in February"   → date_from: {year}-02-01,          date_to: {year}-02-28
+- "in March"      → date_from: {year}-03-01,          date_to: {year}-03-31
+- "last 3 months" → date_from: 3 months ago from today, date_to: today
+- no date         → date_from: null, date_to: null
+
+Current year is {year}. Never default to a single month when user says "this year".
 
 Today: {today}. Calculate real dates for "last month", "this year"."""],
         )
@@ -213,19 +234,34 @@ def answer_query(question: str, chunks: list, history: list = []) -> str:
                 for m in last_pairs
             ])
 
-        today     = datetime.date.today()
-        last_month = (today.replace(day=1) - datetime.timedelta(days=1)).strftime('%B %Y')
+        today      = datetime.date.today()
+        year       = today.year
+        last_month = (today.replace(day=1) - datetime.timedelta(days=1))
+        last_month_str  = last_month.strftime('%B %Y')
+        last_month_from = last_month.replace(day=1).isoformat()
+        last_month_to   = last_month.isoformat()
+        this_month_from = today.replace(day=1).isoformat()
 
         response = client.models.generate_content(
             model    = _GENERATION_MODEL,
             contents = [f"""You are Hita, a personal document assistant for Indian users.
 {f'Previous conversation:{chr(10)}{history_str}{chr(10)}' if history_str else ''}
 Answer using ONLY the document excerpts below.
+
+DATE CONTEXT — use these when interpreting the question:
+- Today: {today.isoformat()}
+- Current year: {year}
+- This month: {today.strftime('%B %Y')} ({this_month_from} to {today.isoformat()})
+- Last month: {last_month_str} ({last_month_from} to {last_month_to})
+
+FORMATTING RULES:
 - For lists of items (medicines, products, expenses) → use bullet points, deduplicate
 - Always mention the vendor/pharmacy name in your answer
 - Always break down amounts by source when multiple documents are involved
 - Use ₹ for amounts
 - For "last month" questions: today is {today}, so last month is last month is {last_month}
+- For yearly summaries → list each expense with month in brackets
+- For "this year" → include ALL documents from {year}, not just one month
 - For follow-up questions like "give more details" or "what products" —
   use both the conversation history AND documents to give a detailed answer
 - If multiple documents are relevant, combine the information
@@ -248,6 +284,23 @@ CRITICAL: Each bullet point must be on a separate line. Never put bullets inline
 
 SPENDING QUESTIONS — format like this:
 "In January, you spent ₹545 at Apollo Pharmacy and ₹500 at MediAssist Pharmacy, totalling ₹1,045."
+
+FINANCIAL QUESTIONS — always calculate total from the Amount fields, not from content text.
+Add ALL amounts listed. Show working:
+"Your total medical expense in 2026 was ₹1,500, including:
+- ₹200 at Hospital (January)
+- ₹500 at Pharmacy (February)  
+- ₹300 at Medi Pharmacy (January)
+- ₹500 at Apo Pharmacy (March)
+Total: ₹200 + ₹500 + ₹300 + ₹500 = ₹1,500"
+
+YEARLY/PERIOD SPENDING — format like this:
+Your total medical expense in {year} was ₹X, including:
+- ₹2,500 at MIOT Hospitals (January)
+- ₹545 at Apollo Pharmacy (January)
+- ₹665 at Apollo Pharmacy (February)
+
+Always say the full period (year/month) not just "In January" when question asks about a year.
 
 Documents:
 {context}

@@ -163,3 +163,27 @@ DOCUMENT_CATEGORIES = ['grocery', 'medical', 'maintenance', 'personal', 'events'
 
 # Gemini API
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'simple': {
+            'format': '[{levelname}] {name} - {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class':     'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'loggers': {
+        'apps': {
+            'handlers':  ['console'],
+            'level':     'INFO',
+            'propagate': False,
+        },
+    },
+}

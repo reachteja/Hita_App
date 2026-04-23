@@ -96,7 +96,7 @@ def _run_similarity_query(embedding_str: str, user_id: str, limit: int) -> list:
     ]
 
 
-def search_similar_chunks(question: str, user_id: str, limit: int = 5) -> list:
+def search_similar_chunks(question: str, user_id: str, limit: int = 20) -> list:
     """
     Search for chunks similar to the question using pgvector.
     Filters by user_id for security.
