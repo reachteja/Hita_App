@@ -98,11 +98,17 @@ export default function AskPage() {
               {msg.sources && msg.sources.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-gray-100">
                   <p className="text-xs text-gray-400 mb-1">Sources:</p>
-                  {msg.sources.map(s => (
-                    <span key={s.id} className="inline-block text-xs bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full mr-1 mt-1">
-                      📄 {s.name}
-                    </span>
-                  ))}
+                  <div className="flex flex-wrap gap-1">
+                    {msg.sources.map((s: any) => (
+                      <span key={s.id}
+                        className="text-xs bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full">
+                        {s.name}
+                        {s.sheet && (
+                          <span className="text-indigo-400 ml-1">› {s.sheet}</span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

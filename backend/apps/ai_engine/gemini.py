@@ -131,12 +131,10 @@ Current question: "{question}"
 Return ONLY this JSON, no markdown:
 {{
   "intent": "list_documents or answer_question",
-  "is_financial": true or false,
   "filters": {{
     "category": "grocery|medical|maintenance|personal|events|finance|education|other or null",
     "date_from": "YYYY-MM-DD or null",
     "date_to": "YYYY-MM-DD or null",
-    "search_term": "string or null",
     "vendor": "string or null"
   }},
   "reasoning": "one line"
@@ -188,7 +186,9 @@ DATE CALCULATION — today is {today_str}, current year is {year}:
 
 Current year is {year}. Never default to a single month when user says "this year".
 
-Today: {today}. Calculate real dates for "last month", "this year"."""],
+Today: {today}. Calculate real dates for "last month", "this year".
+
+"""],
         )
 
         raw = response.text.strip()
@@ -217,6 +217,7 @@ Today: {today}. Calculate real dates for "last month", "this year"."""],
             return json.loads(raw.strip())
         except Exception:
             return {'intent': 'answer_question', 'filters': {}, 'reasoning': 'fallback'}
+
 
 
 def answer_query(question: str, chunks: list, history: list = []) -> str:
@@ -302,6 +303,17 @@ Your total medical expense in {year} was ₹X, including:
 
 Always say the full period (year/month) not just "In January" when question asks about a year.
 
+After your answer, on a new line write exactly:
+SOURCES_USED: [comma separated list of "DocumentName > SheetName" or "DocumentName" if no sheet]
+SECTIONS_USED: [brief description of which part of the document had the answer]
+
+Examples of SOURCES_USED format:
+SOURCES_USED: sample.xlsx > Sheet, Sample2.xlsx > sheet3
+SOURCES_USED: Pharm.txt
+
+Use the exact Document names shown in the excerpts below.
+If you used no document write: SOURCES_USED: none
+
 Documents:
 {context}
 
@@ -309,7 +321,37 @@ Current question: {question}
 
 Answer:"""],
         )
-        return response.text.strip()
+        full_text = response.text.strip()
+        # Parse out SOURCES_USED line
+        used_sources = []
+        used_sections = []
+        answer_text  = full_text
+
+        if 'SOURCES_USED:' in full_text:
+            parts        = full_text.rsplit('SOURCES_USED:', 1)
+            answer_text  = parts[0].strip()
+            remainder   = parts[1].strip()
+            # Parse SECTIONS_USED if present
+            if 'SECTIONS_USED:' in remainder:
+                src_parts      = remainder.split('SECTIONS_USED:', 1)
+                sources_line   = src_parts[0].strip()
+                sections_line  = src_parts[1].strip()
+                used_sections  = [s.strip() for s in sections_line.split(',') if s.strip()]
+            else:
+                sources_line = remainder
+
+            if sources_line.lower() != 'none':
+                used_sources = [
+                    s.strip()
+                    for s in sources_line.split(',')
+                    if s.strip()
+                ]
+
+        return {
+            'answer':       answer_text,
+            'used_sources': used_sources,    # e.g. ["IN_OUT_CASH.xlsx > OUT"]
+            'used_sections': used_sections,  # e.g. ["Factory Vseats expense rows"]
+        }
 
     except Exception as e:
         logger.error(f'Query answering error: {e}')
@@ -323,7 +365,39 @@ Answer:"""],
                 model    = _GENERATION_MODEL,
                 contents = [prompt],
             )
-            return response.text.strip()
+            full_text    = response.text.strip()
+            answer_text  = full_text
+            used_sources = []
+            used_sections = [] 
+            if 'SOURCES_USED:' in full_text:
+                parts       = full_text.rsplit('SOURCES_USED:', 1)
+                answer_text = parts[0].strip()
+                remainder   = parts[1].strip()
+
+                # Parse SECTIONS_USED if present
+                if 'SECTIONS_USED:' in remainder:
+                    src_parts      = remainder.split('SECTIONS_USED:', 1)
+                    sources_line   = src_parts[0].strip()
+                    sections_line  = src_parts[1].strip()
+                    used_sections  = [s.strip() for s in sections_line.split(',') if s.strip()]
+                else:
+                    sources_line = remainder
+
+                if sources_line.lower() != 'none':
+                    used_sources = [
+                        s.strip()
+                        for s in sources_line.split(',')
+                        if s.strip()
+                    ]
+
+            return {
+                'answer':       answer_text,
+                'used_sources': used_sources,    # e.g. ["IN_OUT_CASH.xlsx > OUT"]
+                'used_sections': used_sections,  # e.g. ["Factory Vseats expense rows"]
+            }
         except Exception as retry_err:
             logger.error(f'Retry also failed: {retry_err}')
-            return 'Sorry, I encountered an error processing your query.'
+            return {
+                'answer':      'Sorry, I encountered an error.',
+                'used_sources': [],
+            }

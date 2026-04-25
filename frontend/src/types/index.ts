@@ -35,6 +35,7 @@ export interface QueryResponse {
     id: string;
     name: string;
     category: string;
+    sheet?: string;
   }>;
 }
 

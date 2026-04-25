@@ -44,6 +44,10 @@ class AIViewSet(viewsets.ViewSet):
                 return self._handle_rag_query(request, question, history)
 
         except Exception as e:
+            import traceback
+            logger = logging.getLogger(__name__)
+            logger.error(f'Query failed: {str(e)}')
+            logger.error(traceback.format_exc())
             return Response(
                 {'error': f'Query failed: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -147,368 +151,289 @@ class AIViewSet(viewsets.ViewSet):
             'sources': sources,
         }, status=status.HTTP_200_OK)
     
-    def _handle_rag_query(self, request, question, history=[]):
-        """
-        Two-stage retrieval:
-        1. DB filter narrows to matching documents
-        2. Embeddings rank by relevance within those docs
-        3. Token budget fills context window optimally
-        """
-        import logging
-        logger = logging.getLogger(__name__)
-        from apps.ai_engine.gemini import answer_query, detect_query_intent
-        from apps.ai_engine.embeddings import search_similar_chunks
-        from datetime import date as date_type
-        from django.db.models import Q
-
-        intent_result   = detect_query_intent(question, history)
-        category_filter = intent_result.get('filters', {}).get('category')
-        date_from       = intent_result.get('filters', {}).get('date_from')
-        date_to         = intent_result.get('filters', {}).get('date_to')
-        vendor_filter   = intent_result.get('filters', {}).get('vendor')
-        search_term     = intent_result.get('filters', {}).get('search_term')
-
-        if category_filter == 'other':
-            category_filter = None
-            logger.info('[RAG] category=other ignored — treated as unclassified')
-
-        logger.info(f'[RAG] Question: {question}')
-        logger.info(f'[RAG] Filters — cat={category_filter} '
-                    f'date={date_from}~{date_to} '
-                    f'vendor={vendor_filter} search={search_term}')
-
-        search_question = question
-        if history:
-            last_hita = next(
-                (m['content'] for m in reversed(history) if m['role'] == 'hita'), ''
-            )
-            if len(question.split()) < 5 and last_hita:
-                search_question = f"{last_hita} {question}"
-
-        has_filters = any([category_filter, date_from, date_to, vendor_filter,search_term])
-
-        # ── Base queryset ────────────────────────────────────────────
-        base_qs = Document.objects.filter(
-            user       = request.user,
-            is_deleted = False,
-            status__in = ['ready', 'processed'],
-        ).exclude(extracted_text__isnull=True).exclude(extracted_text='')
-
-        # ── Set A: DB search with structured filters ─────────────────
-        db_qs = base_qs
-
-        if category_filter:
-            db_qs = db_qs.filter(category=category_filter)
-        if date_from:
-            db_qs = db_qs.filter(
-                extracted_date__gte=date_type.fromisoformat(date_from)
-            )
-        if date_to:
-            db_qs = db_qs.filter(
-                extracted_date__lte=date_type.fromisoformat(date_to)
-            )
-        if vendor_filter:
-            db_qs = db_qs.filter(
-                extracted_vendor__icontains=vendor_filter
-            )
-        if date_from or date_to:
-            db_qs = db_qs.exclude(extracted_date__isnull=True)
-        if search_term:
-            db_qs = db_qs.filter(
-                Q(extracted_text__icontains=search_term) |
-                Q(original_name__icontains=search_term) |
-                Q(summary__icontains=search_term)
-            )
-
-        db_doc_ids = set(str(i) for i in db_qs.values_list('id', flat=True))
-        logger.info(f'[RAG] Set A (DB): {len(db_doc_ids)} docs')
-
-        # ── Set B: Embeddings search ─────────────────────────────────
-        similar_chunks = search_similar_chunks(
-            search_question,
-            str(request.user.id),
-            limit=20
-        )
-
-        # Build similarity score map (best score per doc)
-        embed_scores = {}
-        for chunk in similar_chunks:
-            doc_id = str(chunk['doc_id'])
-            score  = chunk.get('similarity', 0)
-            if doc_id not in embed_scores or score > embed_scores[doc_id]:
-                embed_scores[doc_id] = score
-
-        if has_filters:
-            # ── Filtered mode: embeddings must respect same filters ──
-            # Only keep embedding results that also pass DB filters
-            # This prevents irrelevant docs polluting the context
-
-            # Get IDs of all docs that pass the filters
-            filter_passing_ids = db_doc_ids  # already computed above
-
-            # Also include embedding docs that pass filters individually
-            # (catches edge cases where extracted_text search might miss)
-            embed_candidate_ids = set(embed_scores.keys())
-            filtered_embed_qs   = base_qs.filter(
-                id__in=embed_candidate_ids
-            )
-
-            if category_filter:
-                filtered_embed_qs = filtered_embed_qs.filter(
-                    category=category_filter
-                )
-            if date_from:
-                filtered_embed_qs = filtered_embed_qs.filter(
-                    extracted_date__gte=date_type.fromisoformat(date_from)
-                )
-            if date_to:
-                filtered_embed_qs = filtered_embed_qs.filter(
-                    extracted_date__lte=date_type.fromisoformat(date_to)
-                )
-            if date_from or date_to:
-                filtered_embed_qs = filtered_embed_qs.exclude(
-                    extracted_date__isnull=True
-                )
-            if search_term:
-                filtered_embed_qs = filtered_embed_qs.filter(
-                    Q(extracted_text__icontains=search_term) |
-                    Q(original_name__icontains=search_term) |
-                    Q(summary__icontains=search_term)
-                )
-
-            embed_doc_ids = set(
-                str(i) for i in filtered_embed_qs.values_list('id', flat=True)
-            )
-            logger.info(f'[RAG] Set B (embeddings, filtered): {len(embed_doc_ids)} docs')
-
-        else:
-            # ── Unfiltered mode: use all embedding results ───────────
-            # Apply similarity threshold to avoid very low quality matches
-            SIMILARITY_THRESHOLD = 0.50
-            embed_doc_ids = {
-                doc_id for doc_id, score in embed_scores.items()
-                if score >= SIMILARITY_THRESHOLD
-            }
-            logger.info(f'[RAG] Set B (embeddings, threshold={SIMILARITY_THRESHOLD}): '
-                        f'{len(embed_doc_ids)} docs '
-                        f'(dropped {len(embed_scores) - len(embed_doc_ids)} low score)')
-
-        # ── Union A ∪ B ──────────────────────────────────────────────
-        all_doc_ids = db_doc_ids | embed_doc_ids
-        logger.info(f'[RAG] Union A∪B: {len(all_doc_ids)} docs')
-
-        if not all_doc_ids:
-            logger.info('[RAG] No docs found')
-            user_has_docs = Document.objects.filter(
-                user=request.user, is_deleted=False
-            ).exists()
-            return Response({
-                'answer':    ("You haven't uploaded any documents yet."
-                            if not user_has_docs
-                            else "I couldn't find any matching documents for this question."),
-                'intent':    'answer_question',
-                'sources':   [],
-                'documents': [],
-            })
-
-        # Fetch all union docs
-        union_qs   = base_qs.filter(id__in=all_doc_ids)
-        union_docs = {str(doc.id): doc for doc in union_qs}
-
-        # ── Rank: DB match priority + embedding score ────────────────
-        TOKEN_BUDGET   = 80000
-        TOKENS_PER_DOC = 400
-        MAX_DOCS       = TOKEN_BUDGET // TOKENS_PER_DOC
-
-        def rank_score(doc_id):
-            in_db    = 1.0 if doc_id in db_doc_ids else 0.0
-            in_embed = embed_scores.get(doc_id, 0.0)
-            return (in_db * 0.6) + (in_embed * 0.4)
-
-        ranked_docs = sorted(
-            union_docs.values(),
-            key     = lambda d: rank_score(str(d.id)),
-            reverse = True
-        )
-
-        if len(ranked_docs) > MAX_DOCS:
-            ranked_docs = ranked_docs[:MAX_DOCS]
-            logger.info(f'[RAG] Trimmed to {MAX_DOCS} docs')
-
-        # ── Build context within token budget ────────────────────────
-        context_parts = []
-        sources       = []
-        token_count   = 0
-
-        for doc in ranked_docs:
-            relevant_text = self._get_relevant_text(doc, search_term)
-            doc_text = (
-                f"Document: {doc.original_name}\n"
-                f"Date: {doc.extracted_date}\n"
-                f"Category: {doc.category}\n"
-                f"Vendor: {doc.extracted_vendor or 'Unknown'}\n"
-                f"Amount: ₹{doc.extracted_amount or 'Unknown'}\n"
-                f"Content: {relevant_text}"
-            )
-            doc_tokens = len(doc_text) // 4
-
-            if token_count + doc_tokens > TOKEN_BUDGET:
-                logger.info(f'[RAG] Token budget reached at {len(context_parts)} docs')
-                break
-
-            context_parts.append(doc_text)
-            sources.append({
-                'id':       str(doc.id),
-                'name':     doc.original_name,
-                'category': doc.category,
-            })
-            token_count += doc_tokens
-            logger.info(
-                f'[RAG]   + {doc.original_name} '
-                f'(db={str(doc.id) in db_doc_ids} '
-                f'embed={embed_scores.get(str(doc.id), 0):.2f} '
-                f'rank={rank_score(str(doc.id)):.2f})'
-                f'text_start={doc.extracted_text.lower().find(search_term.lower()) if search_term and doc.extracted_text else 0})'
-            )
-
-        logger.info(f'[RAG] Sending {len(context_parts)} docs '
-                    f'(~{token_count} tokens) to Gemini')
-
-        # Medicine query — filter hospital sources from display
-        q_lower = question.lower()
-        if any(kw in q_lower for kw in
-            ['medicine', 'medicines', 'taking', 'prescription']):
-            sources = [
-                s for s in sources
-                if not any(kw in s['name'].lower()
-                        for kw in ['hospital', 'miot', 'heart', 'clinic'])
-            ]
-
-        context = '\n\n---\n\n'.join(context_parts)
-        answer  = answer_query(search_question, [context], history)
-
-        logger.info(f'[RAG] Answer: {answer[:150]}')
-
-        return Response({
-            'answer':    answer,
-            'intent':    'answer_question',
-            'sources':   sources,
-            'documents': [],
-        }, status=status.HTTP_200_OK)
-    
-    def _get_relevant_text(doc, search_term: str, max_chars: int = 1500) -> str:
-        """
-        Extract the most relevant portion of document text.
-        If search_term found — return surrounding context.
-        Otherwise return beginning of text.
-        """
+    def _get_relevant_text(self, doc, search_term: str, max_chars: int = 1500) -> str:
+        """Return most relevant section of document text based on search term."""
         text = doc.extracted_text or ''
         if not text:
             return ''
-
         if not search_term:
             return text[:max_chars]
 
-        # Find where search_term appears in the text
-        term_lower = search_term.lower()
-        text_lower = text.lower()
-        pos        = text_lower.find(term_lower)
-
+        pos = text.lower().find(search_term.lower())
         if pos == -1:
-            # Term not found — return start of text
             return text[:max_chars]
 
-        # Return text centered around the found term
-        # Go back 200 chars to include headers/context before the term
-        start = max(0, pos - 200)
-        end   = min(len(text), start + max_chars)
-
-        # If we're not at the start — include a note
+        # Start from sheet header before the term
+        # Find the nearest 'Sheet:' marker before pos
+        sheet_marker = text.rfind('Sheet:', 0, pos)
+        start  = sheet_marker if sheet_marker != -1 else max(0, pos - 200)
+        end    = min(len(text), start + max_chars)
         prefix = '...\n' if start > 0 else ''
         return prefix + text[start:end]
-    
-    '''
-    def _is_metadata_query(self, question: str) -> bool:
-        """Detect if a question is asking about documents themselves, not their content."""
-        metadata_keywords = [
-            'what', 'which', 'how many', 'list', 'document', 'file', 'upload', 'have',
-            'did i', 'do i', 'documents', 'files', 'uploaded', 'category'
-        ]
-        question_lower = question.lower()
-        
-        # Check for patterns like "what documents", "list my documents", "how many files", etc.
-        for keyword in metadata_keywords:
-            if keyword in question_lower:
-                # Check if it's asking about documents/files
-                if any(word in question_lower for word in ['document', 'file', 'upload', 'category']):
-                    return True
-        
-        return False
-    
-    def _handle_metadata_query(self, request, question: str):
-        """Handle metadata queries about documents."""
-        user_documents = Document.objects.filter(
-            user=request.user, 
-            is_deleted=False,
-            status__in=['processed', 'ready']  # Only include successfully processed docs
-        )
-        
-        if not user_documents.exists():
-            # Check if user has any documents at all
-            all_docs = Document.objects.filter(user=request.user, is_deleted=False)
-            if all_docs.exists():
-                # User has docs but they're not ready
-                failed_count = all_docs.filter(status='failed').count()
-                processing_count = all_docs.filter(status__in=['processing', 'awaiting_ocr']).count()
-                
-                msg = f"You have {all_docs.count()} document(s), but they're not ready yet:\n"
-                if processing_count > 0:
-                    msg += f"⏳ {processing_count} currently processing\n"
-                if failed_count > 0:
-                    msg += f"❌ {failed_count} failed to process (check documents page for errors)"
-                
+
+
+    def _handle_rag_query(self, request, question, history=[]):
+        import logging
+        import traceback
+        logger = logging.getLogger(__name__)
+
+        try:
+            from apps.ai_engine.gemini import answer_query, detect_query_intent
+            from apps.ai_engine.embeddings import search_similar_chunks
+            from datetime import date as date_type
+            from django.db.models import Q
+
+            intent_result   = detect_query_intent(question, history)
+            category_filter = intent_result.get('filters', {}).get('category')
+            date_from       = intent_result.get('filters', {}).get('date_from')
+            date_to         = intent_result.get('filters', {}).get('date_to')
+            vendor_filter   = intent_result.get('filters', {}).get('vendor')
+
+            # Ignore 'other' — means unclassified
+            if category_filter == 'other':
+                category_filter = None
+
+            logger.info(f'[RAG] Question: {question}')
+            logger.info(f'[RAG] Filters — cat={category_filter} '
+                        f'date={date_from}~{date_to} vendor={vendor_filter}')
+
+            # Enrich vague follow-ups
+            search_question = question
+            if history:
+                last_hita = next(
+                    (m['content'] for m in reversed(history)
+                    if m['role'] == 'hita'), ''
+                )
+                if len(question.split()) < 5 and last_hita:
+                    search_question = f"{last_hita} {question}"
+
+            has_structured_filters = any([
+                category_filter, date_from, date_to, vendor_filter
+            ])
+
+            # ── Base queryset ─────────────────────────────────────────
+            base_qs = Document.objects.filter(
+                user       = request.user,
+                is_deleted = False,
+                status__in = ['ready', 'processed'],
+            ).exclude(extracted_text__isnull=True).exclude(extracted_text='')
+
+            # ── Embeddings search — always run first ──────────────────
+            similar_chunks = search_similar_chunks(
+                search_question,
+                str(request.user.id),
+                limit=20
+            )
+
+            # Best similarity score per doc
+            embed_scores = {}
+            for chunk in similar_chunks:
+                doc_id = str(chunk['doc_id'])
+                score  = chunk.get('similarity', 0)
+                if doc_id not in embed_scores or score > embed_scores[doc_id]:
+                    embed_scores[doc_id] = score
+
+            # Adaptive threshold — only keep docs close to top score
+            if embed_scores:
+                top_score = max(embed_scores.values())
+                threshold = max(0.60, top_score - 0.10)
+            else:
+                threshold = 0.60
+
+            embed_doc_ids = {
+                doc_id for doc_id, score in embed_scores.items()
+                if score >= threshold
+            }
+            logger.info(
+                f'[RAG] Embeddings: top={top_score:.2f} '
+                f'threshold={threshold:.2f} '
+                f'kept={len(embed_doc_ids)} '
+                f'dropped={len(embed_scores)-len(embed_doc_ids)}'
+            )
+
+            # ── Set A: DB structured filters (if any) ────────────────
+            # Only apply when user explicitly mentions category/date/vendor
+            if has_structured_filters:
+                db_qs = base_qs
+
+                if category_filter:
+                    db_qs = db_qs.filter(category=category_filter)
+                if date_from:
+                    db_qs = db_qs.filter(
+                        extracted_date__gte=date_type.fromisoformat(date_from)
+                    )
+                if date_to:
+                    db_qs = db_qs.filter(
+                        extracted_date__lte=date_type.fromisoformat(date_to)
+                    )
+                if vendor_filter:
+                    db_qs = db_qs.filter(
+                        extracted_vendor__icontains=vendor_filter
+                    )
+                if date_from or date_to:
+                    db_qs = db_qs.exclude(extracted_date__isnull=True)
+
+                db_doc_ids = set(
+                    str(i) for i in db_qs.values_list('id', flat=True)
+                )
+
+                # Union: DB results + embedding results filtered to same criteria
+                # Embedding results must also pass structured filters
+                filtered_embed_ids = set(
+                    str(i) for i in base_qs.filter(
+                        id__in=embed_doc_ids
+                    ).filter(
+                        category=category_filter
+                        if category_filter else Q()
+                    ).values_list('id', flat=True)
+                ) if category_filter else embed_doc_ids
+
+                all_doc_ids = db_doc_ids | (filtered_embed_ids & embed_doc_ids)
+                logger.info(
+                    f'[RAG] Set A (DB structured): {len(db_doc_ids)} docs'
+                )
+
+            else:
+                # No structured filters — pure embeddings result
+                db_doc_ids  = set()
+                all_doc_ids = embed_doc_ids
+                logger.info('[RAG] No structured filters — pure embeddings')
+
+            logger.info(f'[RAG] Final candidate pool: {len(all_doc_ids)} docs')
+
+            if not all_doc_ids:
+                user_has_docs = Document.objects.filter(
+                    user=request.user, is_deleted=False
+                ).exists()
                 return Response({
-                    'answer': msg,
-                    'sources': []
-                }, status=status.HTTP_200_OK)
+                    'answer':    ("You haven't uploaded any documents yet."
+                                if not user_has_docs
+                                else "I couldn't find any matching documents."),
+                    'intent':    'answer_question',
+                    'sources':   [],
+                    'documents': [],
+                })
+
+            # ── Fetch and rank ────────────────────────────────────────
+            union_qs   = base_qs.filter(id__in=all_doc_ids)
+            union_docs = {str(doc.id): doc for doc in union_qs}
+
+            def rank_score(doc_id):
+                in_db    = 1.0 if doc_id in db_doc_ids else 0.0
+                in_embed = embed_scores.get(doc_id, 0.0)
+                return (in_db * 0.6) + (in_embed * 0.4)
+
+            TOKEN_BUDGET = 80000
+            MAX_DOCS     = TOKEN_BUDGET // 400
+
+            ranked_docs = sorted(
+                union_docs.values(),
+                key     = lambda d: rank_score(str(d.id)),
+                reverse = True
+            )[:MAX_DOCS]
+
+            # ── Build context ─────────────────────────────────────────
+            context_parts = []
+            sources       = []
+            token_count   = 0
+
+            for doc in ranked_docs:
+                try:
+                    relevant_text = self._get_relevant_text(doc, None)
+                except Exception:
+                    relevant_text = (doc.extracted_text or '')[:800]
+
+                doc_text = (
+                    f"=== Document: {doc.original_name} ===\n"
+                    f"Date: {doc.extracted_date}\n"
+                    f"Category: {doc.category}\n"
+                    f"Vendor: {doc.extracted_vendor or 'Unknown'}\n"
+                    f"Amount: ₹{doc.extracted_amount or 'Unknown'}\n"
+                    f"Content:\n{relevant_text}"
+                )
+                doc_tokens = len(doc_text) // 4
+
+                if token_count + doc_tokens > TOKEN_BUDGET:
+                    logger.info(f'[RAG] Token budget at {len(context_parts)} docs')
+                    break
+
+                context_parts.append(doc_text)
+                sources.append({
+                    'id':       str(doc.id),
+                    'name':     doc.original_name,
+                    'category': doc.category,
+                })
+                token_count += doc_tokens
+                logger.info(
+                    f'[RAG]   + {doc.original_name} '
+                    f'(embed={embed_scores.get(str(doc.id),0):.2f} '
+                    f'rank={rank_score(str(doc.id)):.2f})'
+                )
+
+            logger.info(
+                f'[RAG] Sending {len(context_parts)} docs '
+                f'(~{token_count} tokens) to Gemini'
+            )
+
             
+
+            context = '\n\n---\n\n'.join(context_parts)
+            result  = answer_query(search_question, [context], history)
+            
+            # Handle both old string return and new dict return
+            if isinstance(result, dict):
+                answer      = result.get('answer', '')
+                used_sources = result.get('used_sources', [])
+                used_sections = result.get('used_sections', [])
+            else:
+                answer       = result
+                used_sources = []
+                used_sections = []
+
+            logger.info(f'[RAG] Answer: {answer[:150]}')
+            logger.info(f'[RAG] Used sources: {used_sources}')
+            logger.info(f'[RAG] Used sections: {used_sections}')
+
+            # Filter sources to only ones Gemini actually used
+            if used_sources:
+                # Match by filename — case insensitive partial match
+                filtered_sources = []
+                for s in sources:
+                    doc_name = s['name']
+                    # Check if this doc appears in used_sources
+                    # Handle both "IN_OUT_CASH.xlsx > OUT" and "IN_OUT_CASH.xlsx"
+                    for used in used_sources:
+                        used_doc = used.split('>')[0].strip()  # get doc name part
+                        if (used_doc.lower() in doc_name.lower() or
+                            doc_name.lower() in used_doc.lower()):
+
+                            # Add sheet info to source if available
+                            if '>' in used:
+                                sheet = used.split('>', 1)[1].strip()
+                                s = {**s, 'sheet': sheet}
+
+                            filtered_sources.append(s)
+                            break
+
+                # Fallback: if nothing matched, keep all sources
+                sources = filtered_sources if filtered_sources else sources
+
             return Response({
-                'answer': 'You haven\'t uploaded any documents yet. Upload your bills, medical records, receipts, or any other documents to get started!',
-                'sources': []
+                'answer':    answer,
+                'intent':    'answer_question',
+                'sources':   sources,
+                'documents': [],
             }, status=status.HTTP_200_OK)
-        
-        # Build document list response
-        docs_by_category = {}
-        for doc in user_documents:
-            category = doc.category or 'other'
-            if category not in docs_by_category:
-                docs_by_category[category] = []
-            docs_by_category[category].append({
-                'name': doc.original_name,
-                'uploaded': doc.created_at.strftime('%Y-%m-%d'),
-                'status': doc.status
-            })
-        
-        # Format answer
-        answer_parts = [f"You have {user_documents.count()} document(s) ready:\n"]
-        for category, docs in docs_by_category.items():
-            answer_parts.append(f"\n📁 {category.capitalize()} ({len(docs)}):")
-            for doc in docs:
-                answer_parts.append(f"  ✅ {doc['name']} (uploaded: {doc['uploaded']})")
-        
-        sources = []
-        for doc in user_documents[:5]:  # Include up to 5 documents as sources
-            sources.append({
-                'id': str(doc.id),
-                'name': doc.original_name,
-                'category': doc.category
-            })
-        
-        return Response({
-            'answer': '\n'.join(answer_parts),
-            'sources': sources
-        }, status=status.HTTP_200_OK)
-    '''
+
+        except Exception as e:
+            logger.error(f'[RAG] Error: {str(e)}')
+            logger.error(traceback.format_exc())
+            return Response(
+                {'error': f'Query failed: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    
     @action(detail=False, methods=['get'])
     def status(self, request):
         """Check document processing status."""
