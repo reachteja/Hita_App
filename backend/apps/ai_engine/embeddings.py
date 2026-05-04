@@ -3,6 +3,7 @@ Vector embeddings storage and retrieval using pgvector.
 """
 import logging
 from django.db import connection
+from apps.ai_engine.gemini import generate_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ def _ensure_table():
 
 def store_embeddings(document_id: str, chunks: list):
     try:
-        from apps.ai_engine.gemini import generate_embeddings
+        
         _ensure_table()
 
         with connection.cursor() as cursor:
@@ -58,7 +59,7 @@ def store_embeddings(document_id: str, chunks: list):
 
 def _run_similarity_query(embedding_str: str, user_id: str, limit: int) -> list:
     """Run the pgvector similarity search query. Shared by main + retry."""
-    """Return best matching chunk per document — no duplicates."""
+    
     with connection.cursor() as cursor:
         cursor.execute("""
             SELECT chunk_text, document_id, original_name, category, similarity
@@ -102,30 +103,30 @@ def search_similar_chunks(question: str, user_id: str, limit: int = 20) -> list:
     Filters by user_id for security.
     Returns list of dicts with keys: chunk, doc_id, document_name, category, similarity
     """
-    from apps.ai_engine.gemini import generate_embeddings
-
+    # Step 1 — Generate embedding (Gemini API — no DB involved)
     try:
-        # Force fresh connection — avoids Supabase idle timeout
-        connection.close()
+        
         question_embedding = generate_embeddings(question)
         embedding_str      = '[' + ','.join(str(e) for e in question_embedding) + ']'
-
+    except Exception as e:
+        logger.error(f'Embedding generation failed: {e}')
+        return []
         # Ensure connection is alive before querying
         #connection.ensure_connection()
 
+    # Step 2 — Query pgvector (DB — connection matters here)
+    # Close stale connection just before DB call, not before Gemini call
+    try:
+        connection.close()   # ← moved here, right before DB use
         return _run_similarity_query(embedding_str, user_id, limit)
 
     except Exception as e:
-        logger.error(f'Error searching embeddings: {e}')
+        logger.error(f'Similarity query failed: {e}')
 
-        # Connection dropped — close and retry once
+        # Retry once — fresh connection
         try:
-            logger.info('Resetting DB connection and retrying...')
+            logger.info('Retrying similarity query...')
             connection.close()
-
-            question_embedding = generate_embeddings(question)
-            embedding_str      = '[' + ','.join(str(e) for e in question_embedding) + ']'
-
             return _run_similarity_query(embedding_str, user_id, limit)
 
         except Exception as retry_err:

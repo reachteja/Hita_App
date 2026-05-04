@@ -1,7 +1,7 @@
 """
 Views for AI operations (RAG query interface).
 """
-import logging
+import logging, traceback
 
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -11,6 +11,10 @@ from rest_framework.permissions import IsAuthenticated
 from apps.documents.models import Document
 from .serializers import QuerySerializer, QueryResponseSerializer, DocumentStatusSerializer
 
+from django.db.models import Q, Sum
+from apps.ai_engine.gemini import answer_query, detect_query_intent
+from apps.ai_engine.embeddings import search_similar_chunks
+from datetime import date as date_type
 
 class AIViewSet(viewsets.ViewSet):
     """ViewSet for AI operations."""
@@ -28,8 +32,6 @@ class AIViewSet(viewsets.ViewSet):
         history  = request.data.get('history', [])
 
         try:
-            from apps.ai_engine.gemini import detect_query_intent
-
             # Detect intent using Gemini
             intent_result = detect_query_intent(question, history)
             intent        = intent_result.get('intent', 'answer_question')
@@ -44,7 +46,7 @@ class AIViewSet(viewsets.ViewSet):
                 return self._handle_rag_query(request, question, history)
 
         except Exception as e:
-            import traceback
+            
             logger = logging.getLogger(__name__)
             logger.error(f'Query failed: {str(e)}')
             logger.error(traceback.format_exc())
@@ -52,11 +54,25 @@ class AIViewSet(viewsets.ViewSet):
                 {'error': f'Query failed: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-        
+    
+    @staticmethod
+    def _apply_filters(queryset, filters: dict):
+        from datetime import date as date_type
+        if filters.get('category'):
+            queryset = queryset.filter(category=filters['category'])
+        if filters.get('date_from'):
+            queryset = queryset.filter(extracted_date__gte=date_type.fromisoformat(filters['date_from']))
+        if filters.get('date_to'):
+            queryset = queryset.filter(extracted_date__lte=date_type.fromisoformat(filters['date_to']))
+        if filters.get('vendor'):
+            queryset = queryset.filter(extracted_vendor__icontains=filters['vendor'])
+        if filters.get('date_from') or filters.get('date_to'):
+            queryset = queryset.exclude(extracted_date__isnull=True)
+        return queryset
+
     def _handle_list_documents(self, request, question, filters):
         """Handle document search/list queries with Gemini-extracted filters."""
-        from django.db.models import Q, Sum
-
+        
         queryset = Document.objects.filter(
             user=request.user,
             is_deleted=False,
@@ -172,17 +188,13 @@ class AIViewSet(viewsets.ViewSet):
         return prefix + text[start:end]
 
 
-    def _handle_rag_query(self, request, question, history=[]):
-        import logging
-        import traceback
+    def _handle_rag_query(self, request, question, history: list = None):
+        
         logger = logging.getLogger(__name__)
-
+        if history is None:
+            history = []
         try:
-            from apps.ai_engine.gemini import answer_query, detect_query_intent
-            from apps.ai_engine.embeddings import search_similar_chunks
-            from datetime import date as date_type
-            from django.db.models import Q
-
+        
             intent_result   = detect_query_intent(question, history)
             category_filter = intent_result.get('filters', {}).get('category')
             date_from       = intent_result.get('filters', {}).get('date_from')
@@ -374,8 +386,6 @@ class AIViewSet(viewsets.ViewSet):
                 f'[RAG] Sending {len(context_parts)} docs '
                 f'(~{token_count} tokens) to Gemini'
             )
-
-            
 
             context = '\n\n---\n\n'.join(context_parts)
             result  = answer_query(search_question, [context], history)

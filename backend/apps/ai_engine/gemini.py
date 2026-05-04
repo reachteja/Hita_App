@@ -21,6 +21,18 @@ def _get_client():
         _gemini_client = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
     return _gemini_client
 
+def _parse_json_from_response(text: str) -> dict:
+    """Strip markdown fences and parse JSON from Gemini response."""
+    raw = text.strip()
+    if '```' in raw:
+        raw = raw.split('```')[1]
+        if raw.startswith('json'):
+            raw = raw[4:]
+    try:
+        return json.loads(raw.strip())
+    except json.JSONDecodeError:
+        logger.warning(f'JSON parse failed: {raw[:100]}')
+        return {'intent': 'answer_question', 'filters': {}, 'reasoning': 'parse_failed'}
 
 def categorise_document(text: str) -> dict:
     global _gemini_client
@@ -57,12 +69,7 @@ IMPORTANT: Electricity bills, water bills, utility bills → always maintenance,
 JSON only. No markdown."""],
         )
 
-        raw = response.text.strip()
-        if '```' in raw:
-            raw = raw.split('```')[1]
-            if raw.startswith('json'):
-                raw = raw[4:]
-        return json.loads(raw.strip())
+        return _parse_json_from_response(response.text)
 
     except Exception as e:
         logger.error(f'Gemini categorisation error: {e}')
@@ -98,7 +105,7 @@ def generate_embeddings(text: str) -> list:
         raise
 
 
-def detect_query_intent(question: str, history: list = []) -> dict:
+def detect_query_intent(question: str, history: list = None) -> dict:
     global _gemini_client
     today      = datetime.date.today()
     today_str  = today.isoformat()
@@ -107,7 +114,8 @@ def detect_query_intent(question: str, history: list = []) -> dict:
     last_month_from = last_month.replace(day=1).isoformat()
     last_month_to   = last_month.isoformat()
     this_month_from = today.replace(day=1).isoformat()
-
+    if history is None:
+        history = []
     # Build recent context from history
     recent = ''
     if history:
@@ -117,86 +125,83 @@ def detect_query_intent(question: str, history: list = []) -> dict:
             for m in last_pairs
         ])
 
+    prompt = f"""Analyse this question from a document vault app user.
+
+                Recent conversation:
+                {recent if recent else 'No previous messages'}
+
+                Current question: "{question}"
+
+                Return ONLY this JSON, no markdown:
+                {{
+                "intent": "list_documents or answer_question",
+                "filters": {{
+                    "category": "grocery|medical|maintenance|personal|events|finance|education|other or null",
+                    "date_from": "YYYY-MM-DD or null",
+                    "date_to": "YYYY-MM-DD or null",
+                    "vendor": "string or null"
+                }},
+                "reasoning": "one line"
+                }}
+
+                INTENT RULES — read carefully:
+
+                Use "list_documents" ONLY when user wants to:
+                - See a list of document files
+                - "show my bills", "list my documents", "find my receipts"
+                - Questions about which documents exist
+                - show, find, list, fetch, get, display documents.
+
+                Use "answer_question" when user wants to:
+                - Know what they bought, spent, or did
+                - Get details FROM document content
+                - "what did I buy", "what medicines", "what items", "how much"
+                - "what did I purchase", "what was in my bill"
+                - ANY question starting with "what did I..."
+                - Follow-up questions like "give details", "tell me more","what products"
+                - how much, total, amount, what medicines, details from content, follow-up questions.
+
+                EXAMPLES:
+                "what did I buy from bigbasket" → answer_question (wants item details)
+                "show my bigbasket bill" → list_documents (wants document card)
+                "how much did I spend" → answer_question (wants amount from content)
+                "list my medical bills" → list_documents (wants document list)
+                "what medicines am I taking" → answer_question (wants content details)
+                "find my Apollo receipt" → list_documents (wants document card)
+
+
+                CATEGORY EXTRACTION HINTS:
+                - bigbasket, dmart, reliance fresh, more supermarket → grocery
+                - apollo pharmacy, medplus, hospital, clinic → medical  
+                - plumber, electrician, carpenter, painter → maintenance
+                - tneb, bescom, electricity board, water bill → finance
+                If vendor name implies a category — set that category even if not explicitly stated.
+
+                DATE CALCULATION — today is {today_str}, current year is {year}:
+                - "this year"     → date_from: {year}-01-01,          date_to: {year}-12-31
+                - "last year"     → date_from: {year-1}-01-01,        date_to: {year-1}-12-31
+                - "this month"    → date_from: {this_month_from},     date_to: {today_str}
+                - "last month"    → date_from: {last_month_from},     date_to: {last_month_to}
+                - "in January"    → date_from: {year}-01-01,          date_to: {year}-01-31
+                - "in February"   → date_from: {year}-02-01,          date_to: {year}-02-28
+                - "in March"      → date_from: {year}-03-01,          date_to: {year}-03-31
+                - "last 3 months" → date_from: 3 months ago from today, date_to: today
+                - no date         → date_from: null, date_to: null
+
+                Current year is {year}. Never default to a single month when user says "this year".
+
+                Today: {today}. Calculate real dates for "last month", "this year".
+
+                """
+
     try:
         client   = _get_client()
         response = client.models.generate_content(
             model    = _GENERATION_MODEL,
-            contents = [f"""Analyse this question from a document vault app user.
-
-Recent conversation:
-{recent if recent else 'No previous messages'}
-
-Current question: "{question}"
-
-Return ONLY this JSON, no markdown:
-{{
-  "intent": "list_documents or answer_question",
-  "filters": {{
-    "category": "grocery|medical|maintenance|personal|events|finance|education|other or null",
-    "date_from": "YYYY-MM-DD or null",
-    "date_to": "YYYY-MM-DD or null",
-    "vendor": "string or null"
-  }},
-  "reasoning": "one line"
-}}
-
-INTENT RULES — read carefully:
-
-Use "list_documents" ONLY when user wants to:
-- See a list of document files
-- "show my bills", "list my documents", "find my receipts"
-- Questions about which documents exist
-- show, find, list, fetch, get, display documents.
-
-Use "answer_question" when user wants to:
-- Know what they bought, spent, or did
-- Get details FROM document content
-- "what did I buy", "what medicines", "what items", "how much"
-- "what did I purchase", "what was in my bill"
-- ANY question starting with "what did I..."
-- Follow-up questions like "give details", "tell me more","what products"
-- how much, total, amount, what medicines, details from content, follow-up questions.
-
-EXAMPLES:
-"what did I buy from bigbasket" → answer_question (wants item details)
-"show my bigbasket bill" → list_documents (wants document card)
-"how much did I spend" → answer_question (wants amount from content)
-"list my medical bills" → list_documents (wants document list)
-"what medicines am I taking" → answer_question (wants content details)
-"find my Apollo receipt" → list_documents (wants document card)
-
-
-CATEGORY EXTRACTION HINTS:
-- bigbasket, dmart, reliance fresh, more supermarket → grocery
-- apollo pharmacy, medplus, hospital, clinic → medical  
-- plumber, electrician, carpenter, painter → maintenance
-- tneb, bescom, electricity board, water bill → finance
-If vendor name implies a category — set that category even if not explicitly stated.
-
-DATE CALCULATION — today is {today_str}, current year is {year}:
-- "this year"     → date_from: {year}-01-01,          date_to: {year}-12-31
-- "last year"     → date_from: {year-1}-01-01,        date_to: {year-1}-12-31
-- "this month"    → date_from: {this_month_from},     date_to: {today_str}
-- "last month"    → date_from: {last_month_from},     date_to: {last_month_to}
-- "in January"    → date_from: {year}-01-01,          date_to: {year}-01-31
-- "in February"   → date_from: {year}-02-01,          date_to: {year}-02-28
-- "in March"      → date_from: {year}-03-01,          date_to: {year}-03-31
-- "last 3 months" → date_from: 3 months ago from today, date_to: today
-- no date         → date_from: null, date_to: null
-
-Current year is {year}. Never default to a single month when user says "this year".
-
-Today: {today}. Calculate real dates for "last month", "this year".
-
-"""],
+            contents = [prompt],
         )
 
-        raw = response.text.strip()
-        if '```' in raw:
-            raw = raw.split('```')[1]
-            if raw.startswith('json'):
-                raw = raw[4:]
-        return json.loads(raw.strip())
+        return _parse_json_from_response(response.text)
 
     except Exception as e:
         logger.error(f'Intent detection error: {e}')
@@ -209,149 +214,134 @@ Today: {today}. Calculate real dates for "last month", "this year".
                 model    = _GENERATION_MODEL,
                 contents = [prompt],
             )
-            raw = response.text.strip()
-            if '```' in raw:
-                raw = raw.split('```')[1]
-                if raw.startswith('json'):
-                    raw = raw[4:]
-            return json.loads(raw.strip())
+            return _parse_json_from_response(response.text)
         except Exception:
             return {'intent': 'answer_question', 'filters': {}, 'reasoning': 'fallback'}
 
+def _parse_gemini_response(full_text: str) -> dict:
+    answer_text = full_text
+    used_sources = []
+    used_sections = []
+    if 'SOURCES_USED:' in full_text:
+        parts = full_text.rsplit('SOURCES_USED:', 1)
+        answer_text = parts[0].strip()
+        remainder = parts[1].strip()
+        if 'SECTIONS_USED:' in remainder:
+            src, sec = remainder.split('SECTIONS_USED:', 1)
+            sources_line = src.strip()
+            used_sections = [s.strip() for s in sec.split(',') if s.strip()]
+        else:
+            sources_line = remainder
+        if sources_line.lower() != 'none':
+            used_sources = [s.strip() for s in sources_line.split(',') if s.strip()]
+    return {'answer': answer_text, 'used_sources': used_sources, 'used_sections': used_sections}
 
-
-def answer_query(question: str, chunks: list, history: list = []) -> str:
+def answer_query(question: str, chunks: list, history: list = None) -> str:
     global _gemini_client
+    # Build conversation history string
+    
+    if history is None:
+        history = []
+    if history:
+        last_pairs  = history[-6:]   # last 3 exchanges
+        history_str = '\n'.join([
+            f"{'User' if m['role'] == 'user' else 'Hita'}: {m['content']}"
+            for m in last_pairs
+        ])
+
+    today      = datetime.date.today()
+    year       = today.year
+    last_month = (today.replace(day=1) - datetime.timedelta(days=1))
+    last_month_str  = last_month.strftime('%B %Y')
+    last_month_from = last_month.replace(day=1).isoformat()
+    last_month_to   = last_month.isoformat()
+    this_month_from = today.replace(day=1).isoformat()
+    context  = '\n\n---\n\n'.join(chunks[:5])
+    prompt = f"""You are Hita, a personal document assistant for Indian users.
+                {f'Previous conversation:{chr(10)}{history_str}{chr(10)}' if history_str else ''}
+                Answer using ONLY the document excerpts below.
+
+                DATE CONTEXT — use these when interpreting the question:
+                - Today: {today.isoformat()}
+                - Current year: {year}
+                - This month: {today.strftime('%B %Y')} ({this_month_from} to {today.isoformat()})
+                - Last month: {last_month_str} ({last_month_from} to {last_month_to})
+
+                FORMATTING RULES:
+                - For lists of items (medicines, products, expenses) → use bullet points, deduplicate
+                - Always mention the vendor/pharmacy name in your answer
+                - Always break down amounts by source when multiple documents are involved
+                - Use ₹ for amounts
+                - For "last month" questions: today is {today}, so last month is last month is {last_month}
+                - For yearly summaries → list each expense with month in brackets
+                - For "this year" → include ALL documents from {year}, not just one month
+                - For follow-up questions like "give more details" or "what products" —
+                use both the conversation history AND documents to give a detailed answer
+                - If multiple documents are relevant, combine the information
+                - If multiple documents have the same item → mention it once only
+                - Give a complete sentence answer, not just a number
+                - If answer not found say exactly: "I couldn't find this information in your documents."
+                - Never make up information not present in the documents
+
+                MEDICINE QUESTIONS — format like this using markdown:
+                "Based on your pharmacy bills, you are regularly taking:
+                - Metformin 500mg
+                - Atorvastatin 10mg
+                - Aspirin 75mg
+                - Vitamin D3 60K IU"
+                Use markdown format with - for bullet points. Each item on its own line.
+                Never use • character. Use - instead.
+                List medicines only. Do not mention pharmacy name per item.
+                Mention pharmacy names separately at the end if needed.
+                CRITICAL: Each bullet point must be on a separate line. Never put bullets inline.
+
+                SPENDING QUESTIONS — format like this:
+                "In January, you spent ₹545 at Apollo Pharmacy and ₹500 at MediAssist Pharmacy, totalling ₹1,045."
+
+                FINANCIAL QUESTIONS — always calculate total from the Amount fields, not from content text.
+                Add ALL amounts listed. Show working:
+                "Your total medical expense in 2026 was ₹1,500, including:
+                - ₹200 at Hospital (January)
+                - ₹500 at Pharmacy (February)  
+                - ₹300 at Medi Pharmacy (January)
+                - ₹500 at Apo Pharmacy (March)
+                Total: ₹200 + ₹500 + ₹300 + ₹500 = ₹1,500"
+
+                YEARLY/PERIOD SPENDING — format like this:
+                Your total medical expense in {year} was ₹X, including:
+                - ₹2,500 at MIOT Hospitals (January)
+                - ₹545 at Apollo Pharmacy (January)
+                - ₹665 at Apollo Pharmacy (February)
+
+                Always say the full period (year/month) not just "In January" when question asks about a year.
+
+                After your answer, on a new line write exactly:
+                SOURCES_USED: [comma separated list of "DocumentName > SheetName" or "DocumentName" if no sheet]
+                SECTIONS_USED: [brief description of which part of the document had the answer]
+
+                Examples of SOURCES_USED format:
+                SOURCES_USED: sample.xlsx > Sheet, Sample2.xlsx > sheet3
+                SOURCES_USED: Pharm.txt
+
+                Use the exact Document names shown in the excerpts below.
+                If you used no document write: SOURCES_USED: none
+
+                Documents:
+                {context}
+
+                Current question: {question}
+
+                Answer:"""
+    
     try:
         client   = _get_client()
-        context  = '\n\n---\n\n'.join(chunks[:5])
-
-        # Build conversation history string
-        history_str = ''
-        if history:
-            last_pairs  = history[-6:]   # last 3 exchanges
-            history_str = '\n'.join([
-                f"{'User' if m['role'] == 'user' else 'Hita'}: {m['content']}"
-                for m in last_pairs
-            ])
-
-        today      = datetime.date.today()
-        year       = today.year
-        last_month = (today.replace(day=1) - datetime.timedelta(days=1))
-        last_month_str  = last_month.strftime('%B %Y')
-        last_month_from = last_month.replace(day=1).isoformat()
-        last_month_to   = last_month.isoformat()
-        this_month_from = today.replace(day=1).isoformat()
-
+        
         response = client.models.generate_content(
             model    = _GENERATION_MODEL,
-            contents = [f"""You are Hita, a personal document assistant for Indian users.
-{f'Previous conversation:{chr(10)}{history_str}{chr(10)}' if history_str else ''}
-Answer using ONLY the document excerpts below.
-
-DATE CONTEXT — use these when interpreting the question:
-- Today: {today.isoformat()}
-- Current year: {year}
-- This month: {today.strftime('%B %Y')} ({this_month_from} to {today.isoformat()})
-- Last month: {last_month_str} ({last_month_from} to {last_month_to})
-
-FORMATTING RULES:
-- For lists of items (medicines, products, expenses) → use bullet points, deduplicate
-- Always mention the vendor/pharmacy name in your answer
-- Always break down amounts by source when multiple documents are involved
-- Use ₹ for amounts
-- For "last month" questions: today is {today}, so last month is last month is {last_month}
-- For yearly summaries → list each expense with month in brackets
-- For "this year" → include ALL documents from {year}, not just one month
-- For follow-up questions like "give more details" or "what products" —
-  use both the conversation history AND documents to give a detailed answer
-- If multiple documents are relevant, combine the information
-- If multiple documents have the same item → mention it once only
-- Give a complete sentence answer, not just a number
-- If answer not found say exactly: "I couldn't find this information in your documents."
-- Never make up information not present in the documents
-
-MEDICINE QUESTIONS — format like this using markdown:
-"Based on your pharmacy bills, you are regularly taking:
-- Metformin 500mg
-- Atorvastatin 10mg
-- Aspirin 75mg
-- Vitamin D3 60K IU"
-Use markdown format with - for bullet points. Each item on its own line.
-Never use • character. Use - instead.
-List medicines only. Do not mention pharmacy name per item.
-Mention pharmacy names separately at the end if needed.
-CRITICAL: Each bullet point must be on a separate line. Never put bullets inline.
-
-SPENDING QUESTIONS — format like this:
-"In January, you spent ₹545 at Apollo Pharmacy and ₹500 at MediAssist Pharmacy, totalling ₹1,045."
-
-FINANCIAL QUESTIONS — always calculate total from the Amount fields, not from content text.
-Add ALL amounts listed. Show working:
-"Your total medical expense in 2026 was ₹1,500, including:
-- ₹200 at Hospital (January)
-- ₹500 at Pharmacy (February)  
-- ₹300 at Medi Pharmacy (January)
-- ₹500 at Apo Pharmacy (March)
-Total: ₹200 + ₹500 + ₹300 + ₹500 = ₹1,500"
-
-YEARLY/PERIOD SPENDING — format like this:
-Your total medical expense in {year} was ₹X, including:
-- ₹2,500 at MIOT Hospitals (January)
-- ₹545 at Apollo Pharmacy (January)
-- ₹665 at Apollo Pharmacy (February)
-
-Always say the full period (year/month) not just "In January" when question asks about a year.
-
-After your answer, on a new line write exactly:
-SOURCES_USED: [comma separated list of "DocumentName > SheetName" or "DocumentName" if no sheet]
-SECTIONS_USED: [brief description of which part of the document had the answer]
-
-Examples of SOURCES_USED format:
-SOURCES_USED: sample.xlsx > Sheet, Sample2.xlsx > sheet3
-SOURCES_USED: Pharm.txt
-
-Use the exact Document names shown in the excerpts below.
-If you used no document write: SOURCES_USED: none
-
-Documents:
-{context}
-
-Current question: {question}
-
-Answer:"""],
+            contents = [prompt],
         )
-        full_text = response.text.strip()
-        # Parse out SOURCES_USED line
-        used_sources = []
-        used_sections = []
-        answer_text  = full_text
-
-        if 'SOURCES_USED:' in full_text:
-            parts        = full_text.rsplit('SOURCES_USED:', 1)
-            answer_text  = parts[0].strip()
-            remainder   = parts[1].strip()
-            # Parse SECTIONS_USED if present
-            if 'SECTIONS_USED:' in remainder:
-                src_parts      = remainder.split('SECTIONS_USED:', 1)
-                sources_line   = src_parts[0].strip()
-                sections_line  = src_parts[1].strip()
-                used_sections  = [s.strip() for s in sections_line.split(',') if s.strip()]
-            else:
-                sources_line = remainder
-
-            if sources_line.lower() != 'none':
-                used_sources = [
-                    s.strip()
-                    for s in sources_line.split(',')
-                    if s.strip()
-                ]
-
-        return {
-            'answer':       answer_text,
-            'used_sources': used_sources,    # e.g. ["IN_OUT_CASH.xlsx > OUT"]
-            'used_sections': used_sections,  # e.g. ["Factory Vseats expense rows"]
-        }
+        return _parse_gemini_response(response.text.strip())
+        
 
     except Exception as e:
         logger.error(f'Query answering error: {e}')
@@ -365,36 +355,7 @@ Answer:"""],
                 model    = _GENERATION_MODEL,
                 contents = [prompt],
             )
-            full_text    = response.text.strip()
-            answer_text  = full_text
-            used_sources = []
-            used_sections = [] 
-            if 'SOURCES_USED:' in full_text:
-                parts       = full_text.rsplit('SOURCES_USED:', 1)
-                answer_text = parts[0].strip()
-                remainder   = parts[1].strip()
-
-                # Parse SECTIONS_USED if present
-                if 'SECTIONS_USED:' in remainder:
-                    src_parts      = remainder.split('SECTIONS_USED:', 1)
-                    sources_line   = src_parts[0].strip()
-                    sections_line  = src_parts[1].strip()
-                    used_sections  = [s.strip() for s in sections_line.split(',') if s.strip()]
-                else:
-                    sources_line = remainder
-
-                if sources_line.lower() != 'none':
-                    used_sources = [
-                        s.strip()
-                        for s in sources_line.split(',')
-                        if s.strip()
-                    ]
-
-            return {
-                'answer':       answer_text,
-                'used_sources': used_sources,    # e.g. ["IN_OUT_CASH.xlsx > OUT"]
-                'used_sections': used_sections,  # e.g. ["Factory Vseats expense rows"]
-            }
+            return _parse_gemini_response(response.text.strip())
         except Exception as retry_err:
             logger.error(f'Retry also failed: {retry_err}')
             return {
